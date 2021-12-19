@@ -194,9 +194,9 @@ const hemisphereLight = new THREE.HemisphereLight(0x0000ff, 0x00ff00, 1);
 scene.add(hemisphereLight);
 
 // CONTROLS
-// let controls = new OrbitControls(camera, renderer.domElement);
-// controls.enableDamping = true;
-// controls.dampingFactor = 0.05;
+let controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
 
 renderer.render(scene, camera);
 
