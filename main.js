@@ -201,16 +201,16 @@ controls.dampingFactor = 0.05;
 renderer.render(scene, camera);
 
 // HELPERS
-// const axesHelper = new THREE.AxesHelper(5);
-// scene.add(axesHelper);
+const axesHelper = new THREE.AxesHelper(5);
+scene.add(axesHelper);
 
-// const gridHelper = new THREE.GridHelper(10, 10);
-// scene.add(gridHelper);
+const gridHelper = new THREE.GridHelper(10, 10);
+scene.add(gridHelper);
 
-// const directionalLightHelper = new THREE.DirectionalLightHelper(
-//   directionalLight
-// );
-// scene.add(directionalLightHelper);
+const directionalLightHelper = new THREE.DirectionalLightHelper(
+  directionalLight
+);
+scene.add(directionalLightHelper);
 
 // DEBUG PANEL
 // const gui = new dat.GUI();
