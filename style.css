@@ -8,6 +8,7 @@ body {
   /* W3C, IE10+, FF16+, Chrome26+, Opera12+, Safari7+ */
   font-family: "Arial";
   background: linear-gradient(to left, #ff3cac 0%, #784ba0 50%, #2b86c5 100%);
+  background-image: url('../assets/textures/8k.jpg');
 }
 
 .webgl {
