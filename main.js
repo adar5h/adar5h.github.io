@@ -1,444 +1,320 @@
-import { OrbitControls } from "https://cdn.jsdelivr.net/npm/three@0.121.1/examples/jsm/controls/OrbitControls.js";
+// ═══════════════════════════════════════════════════════════
+//  Microservices Network — Interactive Three.js Background
+//
+//  Interactions:
+//    mousemove  →  network rotates + cursor projected into 3D
+//                  glowing lines from cursor to nearby nodes
+//                  nodes near cursor scale up & glow brighter
+//    click      →  ripple wave pulses outward from cursor
+// ═══════════════════════════════════════════════════════════
+(function () {
+    if (typeof THREE === 'undefined') return;
 
-let sizes = { height: window.innerHeight, width: window.innerWidth };
-const canvas = document.querySelector("canvas");
-let transitionHappening = false;
-let offset = 0;
-// RENDERER
-const renderer = new THREE.WebGLRenderer({ canvas, alpha: true });
+    const canvas = document.querySelector('canvas.webgl');
+    const sizes  = { w: window.innerWidth, h: window.innerHeight };
 
-renderer.setSize(sizes.width, sizes.height);
+    const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
+    renderer.setSize(sizes.w, sizes.h);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 
-window.addEventListener("resize", () => {
-  sizes.height = window.innerHeight;
-  sizes.width = window.innerWidth;
+    const scene  = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(55, sizes.w / sizes.h, 0.1, 100);
+    camera.position.set(0, 0, 11);
 
-  if (window.innerWidth <= 600) {
-    mainObject.scale.set(0.5, 0.5, 0.5);
-    offset = 2;
-    camera.position.x = -2 + offset;
-  } else {
-    mainObject.scale.set(1, 1, 1);
-    offset = 0;
-  }
-  camera.aspect = sizes.width / sizes.height;
-  camera.updateProjectionMatrix();
+    // ── Dracula colours ──────────────────────────────────────
+    const C = {
+        green:  0x50fa7b,
+        cyan:   0x8be9fd,
+        purple: 0xbd93f9,
+        orange: 0xffb86c,
+        pink:   0xff79c6,
+        yellow: 0xf1fa8c,
+        red:    0xff5555,
+    };
 
-  renderer.setSize(sizes.width, sizes.height);
-});
+    // ── Node data ────────────────────────────────────────────
+    const nodeData = [
+        { pos: [ 0.0,  0.0,  0.0], r: 0.22, color: C.green,  label: 'API Gateway'  },
+        { pos: [-4.2,  1.5, -1.0], r: 0.17, color: C.purple, label: 'PostgreSQL'   },
+        { pos: [ 3.8,  1.2, -0.5], r: 0.15, color: C.cyan,   label: 'Redis Cache'  },
+        { pos: [-3.0, -2.2,  1.0], r: 0.15, color: C.orange, label: 'Job Queue'    },
+        { pos: [ 2.0,  2.8, -2.0], r: 0.14, color: C.pink,   label: 'Auth'         },
+        { pos: [ 4.5, -1.2,  0.5], r: 0.13, color: C.green,  label: 'Notif. Svc'  },
+        { pos: [-1.8, -1.0,  2.2], r: 0.14, color: C.yellow, label: 'Import/Export'},
+        { pos: [-4.8, -0.8, -1.5], r: 0.12, color: C.red,    label: 'Logger'       },
+        { pos: [ 0.5,  3.2,  1.0], r: 0.12, color: C.cyan,   label: 'Protobuf'     },
+    ];
 
-// TEXTURES LOADER
+    const edgeData = [
+        [0,1],[0,2],[0,3],[0,4],[0,5],[0,6],[0,7],[0,8],
+        [1,3],[1,7],[2,5],[3,6],[4,1],[8,1],
+    ];
 
-let textureLoader = new THREE.TextureLoader();
-let particlesTexture = textureLoader.load("https://raw.githubusercontent.com/adar5h/adar5h.github.io/master/assets/textures/star_01.png");
-let shadowTexture = textureLoader.load("https://raw.githubusercontent.com/adar5h/adar5h.github.io/master/assets/textures/simpleShadow.jpg");
+    // ── Network group ────────────────────────────────────────
+    const networkGroup = new THREE.Group();
+    scene.add(networkGroup);
 
-// SCENE
-const scene = new THREE.Scene();
+    // ── Build nodes ──────────────────────────────────────────
+    const nodes = nodeData.map(nd => {
+        const mesh = new THREE.Mesh(
+            new THREE.SphereGeometry(nd.r, 16, 16),
+            new THREE.MeshBasicMaterial({ color: nd.color })
+        );
+        mesh.position.set(...nd.pos);
 
-// CAMERA
-const camera = new THREE.PerspectiveCamera(
-  45,
-  sizes.width / sizes.height,
-  0.1,
-  1000
-);
-camera.position.z = 7;
-camera.position.x = -2;
+        // glow halo
+        const halo = new THREE.Mesh(
+            new THREE.SphereGeometry(nd.r * 2.5, 16, 16),
+            new THREE.MeshBasicMaterial({ color: nd.color, transparent: true, opacity: 0.06, side: THREE.BackSide })
+        );
+        mesh.add(halo);
 
-// ELEMENTS
+        // orbit ring
+        const ring = new THREE.Mesh(
+            new THREE.RingGeometry(nd.r * 1.5, nd.r * 1.75, 32),
+            new THREE.MeshBasicMaterial({ color: nd.color, transparent: true, opacity: 0.25, side: THREE.DoubleSide })
+        );
+        ring.rotation.x = Math.PI * 0.5;
+        mesh.add(ring);
 
-let innerObjectGeometry = new THREE.IcosahedronGeometry(1, 1);
-let outerObjectGeometry = new THREE.IcosahedronGeometry(1, 1);
+        networkGroup.add(mesh);
+        return { mesh, halo, ring, baseR: nd.r, color: nd.color, pos: nd.pos };
+    });
 
-let innerObjectMaterial = new THREE.MeshStandardMaterial({
-  color: 0xffffff,
-  flatShading: true,
-});
+    // ── Build static edges ───────────────────────────────────
+    const edges = edgeData.map(([ai, bi]) => {
+        const from = new THREE.Vector3(...nodeData[ai].pos);
+        const to   = new THREE.Vector3(...nodeData[bi].pos);
+        const geo  = new THREE.BufferGeometry().setFromPoints([from, to]);
+        const mat  = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.07 });
+        networkGroup.add(new THREE.Line(geo, mat));
+        return { from, to, nodeA: nodeData[ai], nodeB: nodeData[bi] };
+    });
 
-let outerObjectMaterial = new THREE.MeshStandardMaterial({
-  color: 0xffffff,
-  wireframe: true,
-  side: THREE.DoubleSide,
-});
+    // ── Build data packets ───────────────────────────────────
+    const packets = [];
+    const tmp = new THREE.Vector3();
 
-let innerObject = new THREE.Mesh(innerObjectGeometry, innerObjectMaterial);
-let outerObject = new THREE.Mesh(outerObjectGeometry, outerObjectMaterial);
+    edges.forEach(edge => {
+        const count = Math.random() < 0.4 ? 2 : 1;
+        for (let i = 0; i < count; i++) {
+            const color = Math.random() < 0.5 ? edge.nodeA.color : edge.nodeB.color;
+            const mesh  = new THREE.Mesh(
+                new THREE.SphereGeometry(0.04, 8, 8),
+                new THREE.MeshBasicMaterial({ color })
+            );
+            networkGroup.add(mesh);
+            packets.push({
+                mesh, from: edge.from, to: edge.to,
+                progress: Math.random(),
+                speed: 0.003 + Math.random() * 0.005,
+                reverse: Math.random() < 0.3,
+                baseSpeed: 0.003 + Math.random() * 0.005,
+            });
+        }
+    });
 
-outerObject.scale.set(0, 0, 0);
-setTimeout(() => {
-  gsap.to(outerObject.scale, { x: 1.25, y: 1.25, z: 1.25, duration: 1 });
-}, 2500);
-// outerObject.geometry.scale.set(1.25)
-gsap.to(outerObject.scale, { x: 1.75, y: 1.75, z: 1.75, duration: 2.5 });
+    // ── Cursor-to-node connection lines (in local space) ─────
+    const CONNECT_DIST = 3.0;
 
-let mainObject = new THREE.Group();
-mainObject.add(innerObject);
-mainObject.add(outerObject);
-if (window.innerWidth <= 600) {
-  mainObject.scale.set(0.5, 0.5, 0.5);
-  offset = 2;
-  camera.position.x += offset;
-}
-scene.add(mainObject);
+    const cursorLines = nodes.map(nd => {
+        const positions = new Float32Array(6);          // 2 pts × 3 coords
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        const mat  = new THREE.LineBasicMaterial({ color: nd.color, transparent: true, opacity: 0 });
+        const line = new THREE.Line(geo, mat);
+        line.visible = false;
+        line.frustumCulled = false;                     // always draw, even if origin outside frustum
+        networkGroup.add(line);
+        return line;
+    });
 
-let makeClouds = () => {
-  let clouds = new THREE.Group();
-  let cloudPositions = [
-    { x: -15, y: 7, z: 0 },
-    { x: -15, y: 7, z: -15 },
-    { x: 5, y: 5, z: -14 },
-    { x: 15, y: 7, z: 0 },
-  ];
-  let cubeMaterial = new THREE.MeshBasicMaterial({ color: "white" });
-  let cubeGeometry = new THREE.BoxGeometry(1, 1, 1);
-  for (let i = 0; i < 4; i++) {
-    let cloud = new THREE.Group();
-    for (let j = 0; j < 8; j++) {
-      let cubeMesh = new THREE.Mesh(cubeGeometry, cubeMaterial);
-      cubeMesh.material.color =
-        j % 2 == 0 ? new THREE.Color("black") : new THREE.Color("white");
-      cubeMesh.rotation.x = (Math.random() * Math.PI) / 2;
-      cubeMesh.rotation.y = (Math.random() * Math.PI) / 2;
-      cubeMesh.rotation.z = (Math.random() * Math.PI) / 2;
-      cubeMesh.position.x = j - Math.random() * 0.1;
-      let scaleRandom = Math.random();
-      cubeMesh.scale.set(scaleRandom, scaleRandom, scaleRandom);
-      cloud.add(cubeMesh);
-    }
-    cloud.position.set(
-      cloudPositions[i].x,
-      cloudPositions[i].y,
-      cloudPositions[i].z
+    // ── Cursor probe sphere (shown at 3D cursor position) ────
+    const probeMesh = new THREE.Mesh(
+        new THREE.SphereGeometry(0.06, 12, 12),
+        new THREE.MeshBasicMaterial({ color: C.green, transparent: true, opacity: 0 })
     );
-    // cloud.position.x = Math.sin(i * Math.PI)
-    clouds.add(cloud);
-  }
-
-  return clouds;
-};
-
-let clouds = makeClouds();
-scene.add(clouds);
-
-// PLANE
-const geometry = new THREE.PlaneGeometry(100, 15);
-const material = new THREE.MeshBasicMaterial({
-  color: new THREE.Color("#222"), // #ffddff
-  transparent: true,
-  side: THREE.DoubleSide,
-});
-const plane = new THREE.Mesh(geometry, material);
-plane.rotation.x = Math.PI / 2;
-plane.position.y = -1.5;
-plane.position.z = 0;
-
-mainObject.castShadow = true;
-
-scene.add(plane);
-
-// SHADOW
-
-const mainObjectShadow = new THREE.Mesh(
-  new THREE.PlaneBufferGeometry(1.5, 1.5),
-  new THREE.MeshBasicMaterial({
-    color: 0x000000,
-    transparent: true,
-    alphaMap: shadowTexture,
-    opacity: 1,
-  })
-);
-mainObjectShadow.rotation.x = -Math.PI * 0.5;
-mainObjectShadow.position.y = plane.position.y + 0.02;
-mainObjectShadow.position.x = 0;
-
-scene.add(mainObjectShadow);
-
-// PARTICLES
-
-let bgParticlesGeometry = new THREE.BufferGeometry();
-let count = 1500;
-
-let positions = new Float32Array(count * 3);
-
-for (let i = 0; i < count * 3; i++) {
-  positions[i] = (Math.random() - 0.5) * 15;
-}
-
-bgParticlesGeometry.setAttribute(
-  "position",
-  new THREE.BufferAttribute(positions, 3)
-);
-
-let bgParticlesMaterial = new THREE.PointsMaterial();
-bgParticlesMaterial.size = 0.15;
-bgParticlesMaterial.sizeAttenuation = true;
-bgParticlesMaterial.transparent = true;
-bgParticlesMaterial.alphaMap = particlesTexture;
-bgParticlesMaterial.depthWrite = false;
-bgParticlesMaterial.color = new THREE.Color("white");
-
-let bgParticles = new THREE.Points(bgParticlesGeometry, bgParticlesMaterial);
-
-scene.add(bgParticles);
-
-// LIGHT
-const directionalLight = new THREE.DirectionalLight(0xff0000, 1);
-directionalLight.position.x = -5;
-scene.add(directionalLight);
-
-const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
-scene.add(ambientLight);
-
-const hemisphereLight = new THREE.HemisphereLight(0x0000ff, 0x00ff00, 1);
-scene.add(hemisphereLight);
-
-// CONTROLS
-let controls = new OrbitControls(camera, renderer.domElement);
-controls.enableDamping = true;
-controls.dampingFactor = 0.05;
-
-renderer.render(scene, camera);
-
-// HELPERS
-// const axesHelper = new THREE.AxesHelper(5);
-// scene.add(axesHelper);
-
-// const gridHelper = new THREE.GridHelper(10, 10);
-// scene.add(gridHelper);
-
-// const directionalLightHelper = new THREE.DirectionalLightHelper(
-//   directionalLight
-// );
-// scene.add(directionalLightHelper);
-
-// DEBUG PANEL
-// const gui = new dat.GUI();
-// const cameraFolder = gui.addFolder("Camera");
-// cameraFolder.add(camera.position, "x").min(-15).max(15).step(0.01);
-// cameraFolder.add(camera.position, "y").min(-15).max(15).step(0.01);
-// cameraFolder.add(camera.position, "z").min(-15).max(15).step(0.01);
-// cameraFolder.open();
-
-// camera.lookAt(mainObject.position);
-
-// MOUSE
-
-let mouseX = 0;
-let mouseY = 0;
-let targetX = 0;
-let targetY = 0;
-
-const windowX = window.innerWidth / 2;
-const windowY = window.innerHeight / 2;
-
-let onDocumentMouseMove = (event) => {
-  mouseX = event.clientX - windowX;
-  mouseY = event.clientY - windowY;
-};
-document.addEventListener("mousemove", onDocumentMouseMove);
-
-// ANIMATING
-const clock = new THREE.Clock();
-let rotationMode = true;
-let animate = () => {
-  let elapsedTime = clock.getElapsedTime();
-
-  mainObject.position.y = (1 + Math.sin(elapsedTime)) * 0.25;
-  let factor = 1 * mainObject.position.y;
-  if (mainObject.position.y > 0.5) {
-    factor += 0.1;
-  }
-  if (mainObject.position.y <= 0.000008) {
-    rotationMode = !rotationMode;
-  }
-
-  if (rotationMode) {
-    innerObject.rotation.y += factor * 5 * 0.05;
-    outerObject.rotation.z += -1 * factor * 0.1;
-    outerObject.rotation.y += -1 * factor * 0.1;
-  } else {
-    innerObject.rotation.y -= factor * 5 * 0.05;
-    outerObject.rotation.z -= -1 * factor * 0.1;
-    outerObject.rotation.y -= -1 * factor * 0.1;
-  }
-
-  bgParticles.rotation.z += 0.005;
-  bgParticles.rotation.x += 0.005;
-
-  targetX = mouseX * 0.001;
-  targetY = mouseY * 0.001;
-  bgParticles.rotation.y += 0.5 * (targetX - bgParticles.rotation.y);
-
-  if (transitionHappening) {
-    camera.lookAt(mainObject.position);
-  }
-
-  clouds.position.x = Math.sin(elapsedTime * 0.5);
-
-  clouds.position.z = Math.cos(elapsedTime * 0.1);
-
-  mainObjectShadow.material.opacity = 0.7 - mainObject.position.y;
-  // bgParticles.rotation.x += 0.5 * (targetY - bgParticles.rotation.x);
-
-  renderer.render(scene, camera);
-  requestAnimationFrame(animate);
-};
-
-document.addEventListener("mousewheel", (e) => {
-  // camera.position.z -= e.deltaY * 0.001;
-});
-
-let scrollPercent = 0;
-
-document.body.onscroll = () => {
-  //calculate the current scroll progress as a percentage
-  scrollPercent =
-    ((document.documentElement.scrollTop || document.body.scrollTop) /
-      ((document.documentElement.scrollHeight || document.body.scrollHeight) -
-        document.documentElement.clientHeight)) *
-    100;
-};
-
-let viewNum = 0;
-document.getElementById("next-view").addEventListener("click", (e) => {
-  viewNum = (viewNum + 1) % 5;
-  switchAnimation();
-});
-
-document.getElementById("prev-view").addEventListener("click", (e) => {
-  viewNum = viewNum > 0 ? Math.abs((viewNum - 1) % 5) : -1;
-  if (viewNum != -1) {
-    switchAnimation();
-  } else {
-    viewNum = 0;
-  }
-});
-
-let animateView0 = () => {
-  gsap.to(camera.position, { y: 1, x: 0, z: 7 });
-  camera.rotation.set(0, 0, 0);
-  setTimeout(() => {
-    innerObject.geometry = new THREE.IcosahedronGeometry(1, 1);
-
-    gsap.to(innerObject.scale, { x: 1, y: 1, z: 1, duration: 1 });
-    gsap.to(camera.position, { x: -2 });
-    transitionHappening = false;
-  }, 1000);
-  gsap.to(innerObject.scale, { x: 0, y: 0, z: 0, duration: 1 });
-};
-
-let animateView1 = () => {
-  transitionHappening = true;
-  gsap.to(camera.position, { y: 8, x: 1, z: 0 });
-
-  gsap.to(camera.position, { y: 5, x: 0, z: 3, delay: 1, duration: 1 });
-
-  setTimeout(() => {
-    innerObject.geometry = new THREE.TorusGeometry(0.75, 0.2, 16, 100);
-
-    gsap.to(innerObject.scale, { x: 1, y: 1, z: 1, duration: 1 });
-  }, 1000);
-  gsap.to(innerObject.scale, { x: 0, y: 0, z: 0, duration: 1 });
-
-  // hemisphereLight.color = new THREE.Color(0xff0000)
-  // hemisphereLight.groundColor = new THREE.Color(0xff00ff)
-  // console.log(directionalLight, hemisphereLight) // groundColor
-  // console.log(directionalLight.color, hemisphereLight.color)
-};
-
-let animateView2 = () => {
-  transitionHappening = true;
-  gsap.to(camera.position, { y: 5, x: 0, z: -6 });
-  gsap.to(camera.position, { y: 1, x: 0, z: -3, delay: 1, duration: 1 });
-
-  setTimeout(() => {
-    innerObject.geometry = new THREE.SphereGeometry(
-      1,
-      4,
-      9,
-      0,
-      Math.PI * 2,
-      Math.PI * 2,
-      Math.PI * 2
+    // outer pulse ring around probe
+    const probeRing = new THREE.Mesh(
+        new THREE.RingGeometry(0.10, 0.14, 32),
+        new THREE.MeshBasicMaterial({ color: C.green, transparent: true, opacity: 0, side: THREE.DoubleSide })
     );
+    probeRing.rotation.x = Math.PI * 0.5;
+    probeMesh.add(probeRing);
+    networkGroup.add(probeMesh);
 
-    gsap.to(innerObject.scale, { x: 1, y: 1, z: 1, duration: 1 });
-  }, 1000);
-  gsap.to(innerObject.scale, { x: 0, y: 0, z: 0, duration: 1 });
-  // gsap.to(camera.position, { y: 3, x: 2, z: 0 });
-  // gsap.to(camera.position, { y: 1, x: 7, z: 0, delay: 1, duration:1 });
-};
+    // ── Star field ───────────────────────────────────────────
+    const starPos = new Float32Array(800 * 3);
+    for (let i = 0; i < starPos.length; i++) starPos[i] = (Math.random() - 0.5) * 40;
+    const starGeo = new THREE.BufferGeometry();
+    starGeo.setAttribute('position', new THREE.BufferAttribute(starPos, 3));
+    scene.add(new THREE.Points(starGeo, new THREE.PointsMaterial({
+        size: 0.04, sizeAttenuation: true,
+        transparent: true, opacity: 0.28, color: 0x6272a4, depthWrite: false,
+    })));
 
-let animateView3 = () => {
-  transitionHappening = true;
-  gsap.to(camera.position, { y: 2, x: -1.3, z: 2 });
-  gsap.to(camera.position, { y: 1, x: -2, z: 5, delay: 1, duration: 1 });
+    // ── Mouse / raycasting state ─────────────────────────────
+    const ndcMouse    = new THREE.Vector2(-9999, -9999);  // normalised device coords
+    const raycaster   = new THREE.Raycaster();
+    const cursorWorld = new THREE.Vector3();
+    const cursorLocal = new THREE.Vector3();
+    const invMatrix   = new THREE.Matrix4();
+    // Plane at z = 1 in world space (roughly "in front of" the network)
+    const probePane   = new THREE.Plane(new THREE.Vector3(0, 0, 1), -1);
 
-  setTimeout(() => {
-    innerObject.geometry = new THREE.OctahedronGeometry(1, 1);
+    // Smoothed rotation accumulators
+    let rotY = 0, rotX = 0;
+    let targetRotY = 0, targetRotX = 0;
 
-    gsap.to(innerObject.scale, { x: 1, y: 1, z: 1, duration: 1 });
-  }, 1000);
-  gsap.to(innerObject.scale, { x: 0, y: 0, z: 0, duration: 1 });
-};
+    // Click ripple state
+    let ripple = null;  // { localOrigin: Vector3, t: float }
 
-let animateView4 = () => {
-  gsap.to(camera.position, { y: 1, x: 0, z: 7 });
+    // ── Cursor speed tracking (for boosting packets) ─────────
+    let prevMX = 0, prevMY = 0, cursorSpeed = 0;
 
-  setTimeout(() => {
-    innerObject.geometry = new THREE.IcosahedronGeometry(1, 1);
+    document.addEventListener('mousemove', e => {
+        ndcMouse.x = (e.clientX / sizes.w) * 2 - 1;
+        ndcMouse.y = -(e.clientY / sizes.h) * 2 + 1;
 
-    gsap.to(innerObject.scale, { x: 1, y: 1, z: 1, duration: 1 });
+        const mx = (e.clientX / sizes.w - 0.5) * 2;
+        const my = (e.clientY / sizes.h - 0.5) * 2;
 
-    transitionHappening = false;
+        // Mouse drives rotation target (full range = ±0.6 rad)
+        targetRotY = mx * 0.55;
+        targetRotX = -my * 0.30;
 
-    gsap.to(camera.position, { y: 1, x: 2 - offset, z: 7 });
-  }, 1500);
-  gsap.to(innerObject.scale, { x: 0, y: 0, z: 0, duration: 1 });
-};
+        // Track cursor speed
+        cursorSpeed = Math.sqrt((mx - prevMX) ** 2 + (my - prevMY) ** 2) * 30;
+        prevMX = mx; prevMY = my;
+    });
 
-let switchAnimation = () => {
-  if (viewNum == 0) {
-    animateView0();
-  } else if (viewNum == 1) {
-    animateView1();
-  } else if (viewNum == 2) {
-    animateView2();
-  } else if (viewNum == 3) {
-    animateView3();
-  } else if (viewNum == 4) {
-    animateView4();
-  }
-};
+    // Click → ripple
+    document.addEventListener('click', () => {
+        ripple = { origin: cursorLocal.clone(), t: 0 };
+        // Temporarily boost all packet speeds
+        packets.forEach(p => { p.speed = p.baseSpeed * 5; });
+        setTimeout(() => { packets.forEach(p => { p.speed = p.baseSpeed; }); }, 700);
+    });
 
-// setInterval(() => {
-//   document.getElementById("next-view").click();
-// }, 4000);
+    // Resize
+    window.addEventListener('resize', () => {
+        sizes.w = window.innerWidth;
+        sizes.h = window.innerHeight;
+        camera.aspect = sizes.w / sizes.h;
+        camera.updateProjectionMatrix();
+        renderer.setSize(sizes.w, sizes.h);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    });
 
-let listenScroll = () => {
-  if (scrollPercent > 0 && scrollPercent < 15 && viewNum != 0) {
-    viewNum = 0;
-    switchAnimation();
-  } else if (scrollPercent > 20 && scrollPercent < 35 && viewNum != 1) {
-    viewNum = 1;
-    switchAnimation();
-  } else if (scrollPercent > 45 && scrollPercent < 60 && viewNum != 2) {
-    viewNum = 2;
-    switchAnimation();
-  } else if (scrollPercent > 60 && scrollPercent < 80 && viewNum != 3) {
-    viewNum = 3;
-    switchAnimation();
-  } else if (scrollPercent > 85 && scrollPercent < 100 && viewNum != 4) {
-    viewNum = 4;
-    switchAnimation();
-  }
-};
+    // ── Animation loop ───────────────────────────────────────
+    const clock = new THREE.Clock();
 
-setInterval(() => {
-  listenScroll();
-}, 500);
+    (function tick() {
+        const t = clock.getElapsedTime();
 
+        // ── Smooth rotation (mouse-driven + slow idle drift) ──
+        rotY += (targetRotY - rotY) * 0.045 + 0.0003;
+        rotX += (targetRotX - rotX) * 0.045;
+        networkGroup.rotation.y = rotY;
+        networkGroup.rotation.x = rotX;
 
-window.scrollTo({ top: 0, behavior: 'smooth' })
-animate();
+        // ── Project cursor onto scene plane in local space ────
+        networkGroup.updateMatrixWorld();
+        invMatrix.copy(networkGroup.matrixWorld).invert();
+
+        raycaster.setFromCamera(ndcMouse, camera);
+        if (raycaster.ray.intersectPlane(probePane, cursorWorld)) {
+            cursorLocal.copy(cursorWorld).applyMatrix4(invMatrix);
+        }
+
+        // ── Position probe sphere ─────────────────────────────
+        probeMesh.position.copy(cursorLocal);
+        probeMesh.material.opacity = 0.75;
+        probeRing.rotation.z = t * 2.5;
+        probeRing.material.opacity = 0.4 + Math.sin(t * 4) * 0.2;
+
+        // ── Cursor-to-node lines + node hover ─────────────────
+        let anyCursorClose = false;
+
+        nodes.forEach((nd, i) => {
+            const dist   = cursorLocal.distanceTo(nd.mesh.position);
+            const inside = dist < CONNECT_DIST;
+
+            if (inside) {
+                anyCursorClose = true;
+                const t01    = 1 - dist / CONNECT_DIST;              // 0..1 proximity
+                const eased  = Math.pow(t01, 1.6);
+
+                // Line from probe to node
+                cursorLines[i].visible = true;
+                cursorLines[i].material.opacity = eased * 0.7;
+
+                const pos = cursorLines[i].geometry.attributes.position.array;
+                pos[0] = cursorLocal.x;          pos[1] = cursorLocal.y;          pos[2] = cursorLocal.z;
+                pos[3] = nd.mesh.position.x;     pos[4] = nd.mesh.position.y;     pos[5] = nd.mesh.position.z;
+                cursorLines[i].geometry.attributes.position.needsUpdate = true;
+
+                // Node scales up
+                const s = 1 + eased * 0.9;
+                nd.mesh.scale.lerp(tmp.set(s, s, s), 0.12);
+
+                // Halo glows brighter
+                nd.halo.material.opacity = 0.06 + eased * 0.22;
+
+            } else {
+                cursorLines[i].visible = false;
+                nd.mesh.scale.lerp(tmp.set(1, 1, 1), 0.08);
+            }
+        });
+
+        // Probe ring colour feedback — brighten if any node close
+        probeMesh.material.color.setHex(anyCursorClose ? C.cyan : C.green);
+        probeRing.material.color.setHex(anyCursorClose ? C.cyan : C.green);
+
+        // ── Click ripple ──────────────────────────────────────
+        if (ripple) {
+            ripple.t += 0.03;
+            const waveR = ripple.t * 6;         // expanding radius
+            const waveW = 0.7;                   // wave width
+
+            nodes.forEach(nd => {
+                const dist = ripple.origin.distanceTo(nd.mesh.position);
+                const diff = Math.abs(dist - waveR);
+                if (diff < waveW) {
+                    const strength = 1 - diff / waveW;
+                    nd.halo.material.opacity = strength * 0.5;
+                    const s = 1 + strength * 1.5;
+                    nd.mesh.scale.set(s, s, s);
+                }
+            });
+
+            // Flash edges near the wavefront
+            if (ripple.t > 2.0) ripple = null;
+        }
+
+        // ── Idle node pulse ───────────────────────────────────
+        nodes.forEach((nd, i) => {
+            const p = Math.sin(t * 1.8 + i * 0.9);
+            nd.halo.scale.setScalar(1 + p * 0.15);
+            // Don't override opacity if ripple or cursor is active
+            nd.ring.rotation.z = t * 0.6 + i;
+        });
+
+        // ── Move data packets ─────────────────────────────────
+        // Cursor speed slightly boosts nearby packets
+        packets.forEach(p => {
+            const dist = cursorLocal.distanceTo(p.mesh.position);
+            const boost = dist < 2.0 ? 1 + cursorSpeed * 0.3 : 1;
+            p.progress += p.speed * boost;
+            if (p.progress > 1) p.progress = 0;
+            const f = p.reverse ? 1 - p.progress : p.progress;
+            p.mesh.position.lerpVectors(p.from, p.to, f);
+        });
+
+        // Decay cursor speed
+        cursorSpeed *= 0.85;
+
+        renderer.render(scene, camera);
+        requestAnimationFrame(tick);
+    })();
+})();
